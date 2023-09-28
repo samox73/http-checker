@@ -1,3 +1,11 @@
 #!/usr/bin/env bash
 
-KO_DOCKER_REPO=harbor.powerbot.energy/utilities ko build --tags=0.0.1 --platform=linux/amd64,linux/arm64 --base-import-paths .
+if [[ -z "$1" ]]; then
+    echo "Usage: $0 tag"
+    echo "E.g.:  $0 0.0.1"
+    exit 1
+fi
+
+tag="$1"
+
+KO_DOCKER_REPO=harbor.powerbot.energy/utilities ko build --tags="$tag" --base-import-paths .

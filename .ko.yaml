@@ -1,10 +1,11 @@
 builds:
   - id: http-checker
-    dir: ./http-checker # default is .
     main: .
     user: 65532:65532
     flags:
       - -trimpath
+    env:
+      - KO_DOCKER_REPO=harbor.powerbot.energy/utilities
 defaultPlatforms:
 - linux/arm64
 - linux/amd64
