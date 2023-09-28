@@ -1,0 +1,10 @@
+builds:
+  - id: http-checker
+    dir: ./http-checker # default is .
+    main: .
+    user: 65532:65532
+    flags:
+      - -trimpath
+defaultPlatforms:
+- linux/arm64
+- linux/amd64
