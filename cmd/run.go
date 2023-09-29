@@ -5,13 +5,15 @@ package cmd
 
 import (
 	"log"
+	"net/http"
 	"net/url"
+	"time"
 
-	"github.com/powerbot-trading/x/logger"
 	"github.com/spf13/cobra"
 
-	"github.com/samox73/http-checker/metrics"
-	"github.com/samox73/http-checker/pkg"
+	httpchecker "github.com/samox73/http-checker/pkg/http-checker"
+	"github.com/samox73/http-checker/pkg/logger"
+	"github.com/samox73/http-checker/pkg/metrics"
 )
 
 // runCmd represents the run command
@@ -35,7 +37,9 @@ var runCmd = &cobra.Command{
 		persist, _ := cmd.Flags().GetBool("persist")
 		file, _ := cmd.Flags().GetString("file")
 		metrics := metrics.New()
-		pkg.Run(log, urlFlags, period, persist, file, metrics)
+
+		httpChecker := httpchecker.New(http.Client{Timeout: time.Duration(period) * time.Second}, metrics, *log)
+		httpChecker.Run(urlFlags, period, persist, file)
 		return nil
 	},
 }
