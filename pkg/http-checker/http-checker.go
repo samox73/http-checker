@@ -17,6 +17,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sourcegraph/conc"
+	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
 	"github.com/samox73/http-checker/pkg/metrics"
@@ -29,14 +30,46 @@ type availability struct {
 	latencyInMillis int64
 }
 
-type httpChecker struct {
-	client  http.Client
-	metrics metrics.Metrics
-	log     zap.SugaredLogger
+type target struct {
+	UrlTemplate       string   `mapstructure:"urlTemplate"`
+	PlaceholderNames  []string `mapstructure:"placeholderNames"`
+	PlaceholderValues [][]any  `mapstructure:"placeholderValues"`
 }
 
-func New(client http.Client, metrics metrics.Metrics, log zap.SugaredLogger) httpChecker {
-	return httpChecker{client: client, metrics: metrics, log: log}
+type config struct {
+	Targets []target `mapstructure:"targets"`
+}
+
+type httpChecker struct {
+	urls     []string
+	client   http.Client
+	metrics  metrics.Metrics
+	log      zap.SugaredLogger
+	period   int
+	persist  bool
+	filename string
+}
+
+func (c *config) buildUrls() []string {
+	urls := make([]string, 1)
+	for _, t := range c.Targets {
+		for _, v := range t.PlaceholderValues {
+			url := fmt.Sprintf(t.UrlTemplate, v...)
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
+func New(client http.Client, metrics metrics.Metrics, log zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
+	config := config{}
+	if err := viper.Unmarshal(&config); err != nil {
+		log.Errorf("failed to unmarshal config %s", viper.GetViper().ConfigFileUsed())
+	}
+	log.Debugf("config read successfully: %v", config)
+	urls := config.buildUrls()
+	log.Debugf("urls built successfully: %v", urls)
+	return httpChecker{urls: urls, client: client, metrics: metrics, log: log, period: period, persist: persist, filename: filename}
 }
 
 func (h *httpChecker) makeHttpRequest(url string) (int64, int, error) {
@@ -97,11 +130,11 @@ func persistToWriter(a availability, writer *csv.Writer) error {
 	return nil
 }
 
-func (h *httpChecker) runSingle(url string, period int, persist bool, file string) {
-	h.log.Debug("starting check", zap.String("url", url))
+func (h *httpChecker) runUrl(url string) {
+	h.log.Debugw("starting check", zap.String("url", url))
 	var w *csv.Writer
-	if persist {
-		f, err := os.Create(file + "_" + url)
+	if h.persist {
+		f, err := os.Create(h.filename + "_" + url)
 		if err != nil {
 			h.log.Errorw("could not create file, results will not be persisted", zap.String("url", url), zap.Error(err))
 		}
@@ -119,7 +152,7 @@ func (h *httpChecker) runSingle(url string, period int, persist bool, file strin
 	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
 	h.metrics.HttpRequestDurationSum.With(labels).Add(0.001 * float64(availability.latencyInMillis))
 
-	if persist {
+	if h.persist {
 		err = persistToWriter(*availability, w)
 		if err != nil {
 			h.log.Errorw("could not persist availibility", zap.String("url", url), zap.Error(err))
@@ -132,9 +165,9 @@ func (h *httpChecker) runSingle(url string, period int, persist bool, file strin
 	}
 }
 
-func (h *httpChecker) Run(urls []string, period int, persist bool, filename string) {
-	h.log.Infow("starting ticker", zap.Int("period", period), zap.Strings("urls", urls), zap.Bool("persist", persist), zap.String("filename", filename))
-	ticker := time.NewTicker(time.Duration(period) * time.Second)
+func (h *httpChecker) Run() {
+	h.log.Infow("starting ticker")
+	ticker := time.NewTicker(time.Duration(h.period) * time.Second)
 	tickerChan := make(chan bool)
 
 	c := make(chan os.Signal, 1)
@@ -152,12 +185,11 @@ func (h *httpChecker) Run(urls []string, period int, persist bool, filename stri
 		case <-tickerChan:
 			return
 		case _, ok = <-ticker.C:
-			h.log.Info("starting main loop")
+			h.log.Infow("starting main loop")
 			startTime := time.Now()
 			var wg conc.WaitGroup
-			for _, url := range urls {
-				url := url
-				wg.Go(func() { h.runSingle(url, period, persist, filename) })
+			for _, url := range h.urls {
+				wg.Go(func() { h.runUrl(url) })
 			}
 			wg.Wait()
 			elapsedTime := time.Since(startTime)
