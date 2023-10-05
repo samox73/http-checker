@@ -101,7 +101,7 @@ func (h *httpChecker) runSingle(url string, period int, persist bool, file strin
 	if persist {
 		f, err := os.Create(file + "_" + url)
 		if err != nil {
-			h.log.Error("could not create file, results will not be persisted", zap.String("url", url), zap.Error(err))
+			h.log.Errorw("could not create file, results will not be persisted", zap.String("url", url), zap.Error(err))
 		}
 		defer f.Close()
 		w = csv.NewWriter(f)
@@ -110,7 +110,7 @@ func (h *httpChecker) runSingle(url string, period int, persist bool, file strin
 	}
 	availability, err := h.observe(url)
 	if err != nil {
-		h.log.Error("check failed", zap.String("url", url), zap.Error(err))
+		h.log.Errorw("check failed", zap.String("url", url), zap.Error(err))
 		return
 	}
 	labels := prometheus.Labels{"url": url, "code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
@@ -120,7 +120,7 @@ func (h *httpChecker) runSingle(url string, period int, persist bool, file strin
 	if persist {
 		err = persistToWriter(*availability, w)
 		if err != nil {
-			h.log.Error("could not persist availibility", zap.String("url", url), zap.Error(err))
+			h.log.Errorw("could not persist availibility", zap.String("url", url), zap.Error(err))
 		}
 	}
 	if availability.code >= 200 && availability.code < 300 {
