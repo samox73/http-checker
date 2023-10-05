@@ -3,6 +3,7 @@ package httpchecker
 import (
 	"encoding/csv"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,7 +46,8 @@ func (h *httpChecker) makeHttpRequest(url string) (int64, int, error) {
 		fmt.Println("error: ", err)
 		return 0, 0, err
 	}
-	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
 	elapsedTime := time.Since(startTime)
 	millis := elapsedTime.Milliseconds()
 	return millis, resp.StatusCode, nil

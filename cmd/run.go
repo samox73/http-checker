@@ -38,7 +38,19 @@ var runCmd = &cobra.Command{
 		file, _ := cmd.Flags().GetString("file")
 		metrics := metrics.New()
 
-		httpChecker := httpchecker.New(http.Client{Timeout: time.Duration(period) * time.Second}, metrics, *log)
+		transport := &http.Transport{
+			MaxIdleConns:        0,
+			TLSHandshakeTimeout: 0,
+			MaxIdleConnsPerHost: 1000,
+			MaxConnsPerHost:     0,
+			IdleConnTimeout:     0,
+		}
+
+		client := http.Client{
+			Timeout:   time.Duration(period) * time.Second,
+			Transport: transport,
+		}
+		httpChecker := httpchecker.New(client, metrics, *log)
 		httpChecker.Run(urlFlags, period, persist, file)
 		return nil
 	},
