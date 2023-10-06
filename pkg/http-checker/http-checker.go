@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sourcegraph/conc"
+	// "github.com/sourcegraph/conc"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
@@ -30,46 +30,30 @@ type availability struct {
 	latencyInMillis int64
 }
 
-type target struct {
+type config struct {
 	UrlTemplate       string   `mapstructure:"urlTemplate"`
 	PlaceholderNames  []string `mapstructure:"placeholderNames"`
 	PlaceholderValues [][]any  `mapstructure:"placeholderValues"`
 }
 
-type config struct {
-	Targets []target `mapstructure:"targets"`
-}
-
 type httpChecker struct {
-	urls     []string
+	config   config
 	client   http.Client
 	metrics  metrics.Metrics
-	log      zap.SugaredLogger
+	log      *zap.SugaredLogger
 	period   int
 	persist  bool
 	filename string
 }
 
-func (c *config) buildUrls() []string {
-	urls := make([]string, 1)
-	for _, t := range c.Targets {
-		for _, v := range t.PlaceholderValues {
-			url := fmt.Sprintf(t.UrlTemplate, v...)
-			urls = append(urls, url)
-		}
-	}
-	return urls
-}
-
-func New(client http.Client, metrics metrics.Metrics, log zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
+func New(client http.Client, log *zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
 	config := config{}
 	if err := viper.Unmarshal(&config); err != nil {
 		log.Errorf("failed to unmarshal config %s", viper.GetViper().ConfigFileUsed())
 	}
 	log.Debugf("config read successfully: %v", config)
-	urls := config.buildUrls()
-	log.Debugf("urls built successfully: %v", urls)
-	return httpChecker{urls: urls, client: client, metrics: metrics, log: log, period: period, persist: persist, filename: filename}
+	metrics := metrics.New(config.PlaceholderNames)
+	return httpChecker{config: config, client: client, metrics: metrics, log: log, period: period, persist: persist, filename: filename}
 }
 
 func (h *httpChecker) makeHttpRequest(url string) (int64, int, error) {
@@ -130,13 +114,23 @@ func persistToWriter(a availability, writer *csv.Writer) error {
 	return nil
 }
 
-func (h *httpChecker) runUrl(url string) {
-	h.log.Debugw("starting check", zap.String("url", url))
+func appendKeyValues(log *zap.SugaredLogger, placeholderNames []string, placeholderValues []any) *zap.SugaredLogger {
+	logger := log.With()
+	for i, name := range placeholderNames {
+		logger = logger.With(name, placeholderValues[i])
+	}
+	return logger
+}
+
+func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, placeholderValues []any) {
+	url := fmt.Sprintf(urlTemplate, placeholderValues...)
+	log := appendKeyValues(h.log, placeholderNames, placeholderValues)
+	log.Debugw("starting check")
 	var w *csv.Writer
 	if h.persist {
 		f, err := os.Create(h.filename + "_" + url)
 		if err != nil {
-			h.log.Errorw("could not create file, results will not be persisted", zap.String("url", url), zap.Error(err))
+			log.Errorw("could not create file, results will not be persisted", zap.Error(err))
 		}
 		defer f.Close()
 		w = csv.NewWriter(f)
@@ -145,23 +139,31 @@ func (h *httpChecker) runUrl(url string) {
 	}
 	availability, err := h.observe(url)
 	if err != nil {
-		h.log.Errorw("check failed", zap.String("url", url), zap.Error(err))
+		log.Errorw("check failed", zap.Error(err))
 		return
 	}
-	labels := prometheus.Labels{"url": url, "code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
+	labels := prometheus.Labels{"code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
+	for i, name := range placeholderNames {
+		value, ok := placeholderValues[i].(string)
+		if !ok {
+			log.Errorf("could not convert '%v' to string", placeholderValues[i])
+		}
+		labels[name] = value
+	}
+	log.Debugf("built labels: %v", labels)
 	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
 	h.metrics.HttpRequestDurationSum.With(labels).Add(0.001 * float64(availability.latencyInMillis))
 
 	if h.persist {
 		err = persistToWriter(*availability, w)
 		if err != nil {
-			h.log.Errorw("could not persist availibility", zap.String("url", url), zap.Error(err))
+			log.Errorw("could not persist availibility", zap.Error(err))
 		}
 	}
 	if availability.code >= 200 && availability.code < 300 {
-		h.log.Infow("check completed", zap.String("url", url), zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
+		log.Infow("check completed", zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
 	} else {
-		h.log.Errorw("check completed", zap.String("url", url), zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
+		log.Errorw("check completed", zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
 	}
 }
 
@@ -187,11 +189,12 @@ func (h *httpChecker) Run() {
 		case _, ok = <-ticker.C:
 			h.log.Infow("starting main loop")
 			startTime := time.Now()
-			var wg conc.WaitGroup
-			for _, url := range h.urls {
-				wg.Go(func() { h.runUrl(url) })
+			// var wg conc.WaitGroup
+			for _, values := range h.config.PlaceholderValues {
+				// wg.Go(func() { h.runUrl(target.UrlTemplate, target.PlaceholderNames, values) })
+				h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values)
 			}
-			wg.Wait()
+			// wg.Wait()
 			elapsedTime := time.Since(startTime)
 			h.metrics.ProcessingDurationSum.Add(elapsedTime.Seconds())
 			h.metrics.ProcessingDurationCount.Add(1)

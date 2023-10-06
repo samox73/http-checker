@@ -1,27 +1,23 @@
 {
-    "targets": [
-        {
-            "urlTemplate": "https://%s.%s/%s%s",
-            "placeholderNames": [
-                "subdomain",
-                "domain",
-                "customer",
-                "path"
-            ],
-            "placeholderValues": [
-                [
-                    "prod1",
-                    "powerbot-trading.com",
-                    "inercomp",
-                    "/"
-                ],
-                [
-                    "prod2",
-                    "powerbot-trading.com",
-                    "inercomp",
-                    "/"
-                ]
-            ]
-        }
+    "urlTemplate": "https://%s.%s/%s%s",
+    "placeholderNames": [
+        "subdomain",
+        "domain",
+        "customer",
+        "path"
+    ],
+    "placeholderValues": [
+        [
+            "prod1",
+            "powerbot-trading.com",
+            "inercomp",
+            "/"
+        ],
+        [
+            "prod2",
+            "powerbot-trading.com",
+            "inercomp",
+            "/"
+        ]
     ]
 }

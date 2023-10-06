@@ -33,8 +33,6 @@ var runCmd = &cobra.Command{
 			return err
 		}
 
-		metrics := metrics.New()
-
 		transport := &http.Transport{
 			MaxIdleConns:        0,
 			TLSHandshakeTimeout: 0,
@@ -47,7 +45,7 @@ var runCmd = &cobra.Command{
 			Timeout:   time.Duration(period) * time.Second,
 			Transport: transport,
 		}
-		httpChecker := httpchecker.New(client, metrics, *log, period, persist, filename)
+		httpChecker := httpchecker.New(client, log, period, persist, filename)
 		httpChecker.Run()
 		return nil
 	},

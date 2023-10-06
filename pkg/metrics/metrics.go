@@ -33,16 +33,18 @@ func ServeProfilerAndMetrics(logger *zap.SugaredLogger, addr string) {
 	}
 }
 
-func New() Metrics {
+func New(labels []string) Metrics {
+	finalLabels := []string{"code", "ips"}
+	finalLabels = append(finalLabels, labels...)
 	return Metrics{
 		HttpRequestDurationCount: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_request_duration_seconds_count",
 			Help: "The total number of http requests that have been made",
-		}, []string{"url", "code", "ips"}),
+		}, finalLabels),
 		HttpRequestDurationSum: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_request_duration_seconds_sum",
 			Help: "The sum of durations of the http requests that have been made",
-		}, []string{"url", "code", "ips"}),
+		}, finalLabels),
 		ProcessingDurationCount: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "processing_duration_seconds_count",
 			Help: "The total number of processing loops that have been executed",
