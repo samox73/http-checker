@@ -3,32 +3,22 @@ package httpchecker
 import (
 	"encoding/csv"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	// "github.com/sourcegraph/conc"
+	"github.com/sourcegraph/conc"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
 	"github.com/samox73/http-checker/pkg/metrics"
 )
-
-type availability struct {
-	time            time.Time
-	code            int
-	ips             []string
-	latencyInMillis int64
-}
 
 type config struct {
 	UrlTemplate       string   `mapstructure:"urlTemplate"`
@@ -55,53 +45,30 @@ func New(client http.Client, log *zap.SugaredLogger, period int, persist bool, f
 	metrics := metrics.New(config.PlaceholderNames)
 	return httpChecker{config: config, client: client, metrics: metrics, log: log, period: period, persist: persist, filename: filename}
 }
-
-func (h *httpChecker) makeHttpRequest(url string) (int64, int, error) {
-	startTime := time.Now()
-	resp, err := h.client.Get(url)
-	if err != nil {
-		fmt.Println("error: ", err)
-		return 0, 0, err
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	elapsedTime := time.Since(startTime)
-	millis := elapsedTime.Milliseconds()
-	return millis, resp.StatusCode, nil
-}
-
-func lookupIPs(host string) ([]string, error) {
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return nil, err
-	}
-	ipsStr := []string{}
-	for _, ip := range ips {
-		ipsStr = append(ipsStr, ip.String())
-	}
-	sort.Strings(ipsStr)
-	return ipsStr, nil
-}
-
 func (h *httpChecker) observe(urlInput string) (*availability, error) {
 	now := time.Now()
 
 	url, err := url.Parse(urlInput)
 	if err != nil {
+		h.log.Errorw("could not parse url", zap.Error(err))
 		return nil, err
 	}
 
 	millis, code, err := h.makeHttpRequest(url.String())
+	availability := &availability{latencyInMillis: millis, code: code, time: now}
 	if err != nil {
-		return nil, err
+		h.log.Errorw("could not complete http request", zap.Error(err))
+		return availability, err
 	}
 
 	ips, err := lookupIPs(url.Hostname())
 	if err != nil {
-		return nil, err
+		h.log.Errorw("could not lookup IPs", zap.Error(err))
+		return availability, err
 	}
+	availability.ips = ips
 
-	return &availability{latencyInMillis: millis, code: code, ips: ips, time: now}, nil
+	return availability, nil
 }
 
 func persistToWriter(a availability, writer *csv.Writer) error {
@@ -122,39 +89,45 @@ func appendKeyValues(log *zap.SugaredLogger, placeholderNames []string, placehol
 	return logger
 }
 
+func (h *httpChecker) fillLabels(labels prometheus.Labels, placeholderNames []string, placeholderValues []any) prometheus.Labels {
+	for i, name := range placeholderNames {
+		value, ok := placeholderValues[i].(string)
+		if !ok {
+			h.log.Errorf("could not convert '%v' to string", placeholderValues[i])
+			continue
+		}
+		labels[name] = value
+	}
+	h.log.Debugf("built labels: %v", labels)
+	return labels
+}
+
 func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, placeholderValues []any) {
-	url := fmt.Sprintf(urlTemplate, placeholderValues...)
+	urlToCheck := fmt.Sprintf(urlTemplate, placeholderValues...)
 	log := appendKeyValues(h.log, placeholderNames, placeholderValues)
 	log.Debugw("starting check")
-	var w *csv.Writer
-	if h.persist {
-		f, err := os.Create(h.filename + "_" + url)
-		if err != nil {
-			log.Errorw("could not create file, results will not be persisted", zap.Error(err))
-		}
-		defer f.Close()
-		w = csv.NewWriter(f)
-		_ = w.Write([]string{"time", "code", "latencyMillis", "ips"})
-		defer w.Flush()
+
+	w, err := getCsvWriter(h.persist, h.filename, urlToCheck)
+	if err != nil {
+		log.Errorw("could not create file, results will not be persisted", zap.Error(err))
 	}
-	availability, err := h.observe(url)
+
+	availability, err := h.observe(urlToCheck)
+	if availability == nil {
+		return
+	}
+	labels := prometheus.Labels{"code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
+	labels = h.fillLabels(labels, placeholderNames, placeholderValues)
+	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
+	h.metrics.HttpRequestDurationSum.With(labels).Add(0.001 * float64(availability.latencyInMillis))
+
 	if err != nil {
 		log.Errorw("check failed", zap.Error(err))
 		return
 	}
-	labels := prometheus.Labels{"code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
-	for i, name := range placeholderNames {
-		value, ok := placeholderValues[i].(string)
-		if !ok {
-			log.Errorf("could not convert '%v' to string", placeholderValues[i])
-		}
-		labels[name] = value
-	}
-	log.Debugf("built labels: %v", labels)
-	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
-	h.metrics.HttpRequestDurationSum.With(labels).Add(0.001 * float64(availability.latencyInMillis))
 
 	if h.persist {
+		defer w.Flush()
 		err = persistToWriter(*availability, w)
 		if err != nil {
 			log.Errorw("could not persist availibility", zap.Error(err))
@@ -189,12 +162,12 @@ func (h *httpChecker) Run() {
 		case _, ok = <-ticker.C:
 			h.log.Infow("starting main loop")
 			startTime := time.Now()
-			// var wg conc.WaitGroup
+			var wg conc.WaitGroup
 			for _, values := range h.config.PlaceholderValues {
-				// wg.Go(func() { h.runUrl(target.UrlTemplate, target.PlaceholderNames, values) })
-				h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values)
+				values := values
+				wg.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
 			}
-			// wg.Wait()
+			wg.Wait()
 			elapsedTime := time.Since(startTime)
 			h.metrics.ProcessingDurationSum.Add(elapsedTime.Seconds())
 			h.metrics.ProcessingDurationCount.Add(1)

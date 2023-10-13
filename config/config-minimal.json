@@ -1,0 +1,17 @@
+{
+    "urlTemplate": "https://%s.%s/%s%s",
+    "placeholderNames": [
+        "subdomain",
+        "domain",
+        "customer",
+        "path"
+    ],
+    "placeholderValues": [
+        [
+            "prod1",
+            "powerboat-trading.com",
+            "demo",
+            "/"
+        ]
+    ]
+}
