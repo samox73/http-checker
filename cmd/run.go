@@ -4,10 +4,13 @@ Copyright © 2023 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"go.uber.org/zap/exp/zapslog"
 
 	httpchecker "github.com/samox73/http-checker/pkg/http-checker"
 	"github.com/samox73/http-checker/pkg/logger"
@@ -45,7 +48,21 @@ var runCmd = &cobra.Command{
 			Timeout:   time.Duration(period) * time.Second,
 			Transport: transport,
 		}
-		httpChecker := httpchecker.New(client, log, period, persist, filename)
+
+		handler := zapslog.NewHandler(log.Desugar().Core(), nil)
+		opts := viper.WithLogger(slog.New(handler))
+		v := viper.NewWithOptions(opts)
+
+		v.AddConfigPath("./config")
+		v.AddConfigPath("/http-checker/configs")
+		v.SetConfigName("config")
+		v.SetConfigType("json")
+		if err := v.ReadInConfig(); err != nil {
+			log.Fatal(err)
+		}
+		v.WatchConfig()
+
+		httpChecker := httpchecker.New(v, client, log, period, persist, filename)
 		httpChecker.Run()
 		return nil
 	},

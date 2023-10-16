@@ -24,12 +24,14 @@ import (
 )
 
 type config struct {
+	MaxPoolSize       int      `mapstructure:"maxPoolSize"`
 	UrlTemplate       string   `mapstructure:"urlTemplate"`
 	PlaceholderNames  []string `mapstructure:"placeholderNames"`
 	PlaceholderValues [][]any  `mapstructure:"placeholderValues"`
 }
 
 type httpChecker struct {
+	viper      *viper.Viper
 	config     config
 	configLock sync.Mutex
 	client     *http.Client
@@ -42,24 +44,23 @@ type httpChecker struct {
 }
 
 func (h *httpChecker) readConfig() {
+	h.log.Infow("config changed, waiting for lock")
 	h.configLock.Lock()
 	defer h.configLock.Unlock()
 	oldConfig := h.config
-	h.config = config{}
-	if err := viper.Unmarshal(&h.config); err != nil {
+	if err := h.viper.Unmarshal(&h.config); err != nil {
 		h.config = oldConfig
-		h.log.Errorf("failed to unmarshal config %s", viper.GetViper().ConfigFileUsed())
-	} else {
-		h.log.Infof("config read successfully: %v", h.config)
+		h.log.Errorf("failed to unmarshal config %s", h.viper.ConfigFileUsed())
 	}
 }
 
-func New(client *http.Client, log *zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
+func New(v *viper.Viper, client *http.Client, log *zap.SugaredLogger, period int, persist bool, filename string) *httpChecker {
 	w, err := getCsvWriter(persist, filename)
 	if err != nil {
 		log.Errorw("could not create csv writer", zap.Error(err))
 	}
 	h := httpChecker{
+		viper:    v,
 		client:   client,
 		log:      log,
 		period:   period,
@@ -69,11 +70,10 @@ func New(client *http.Client, log *zap.SugaredLogger, period int, persist bool, 
 	}
 	h.readConfig()
 	h.metrics = metrics.New(h.config.PlaceholderNames)
-	viper.OnConfigChange(func(in fsnotify.Event) {
-		h.log.Infow("config changed")
+	h.viper.OnConfigChange(func(in fsnotify.Event) {
 		h.readConfig()
 	})
-	return h
+	return &h
 }
 
 func (h *httpChecker) observe(urlInput string) (*availability, error) {
@@ -184,13 +184,13 @@ func (h *httpChecker) Run() {
 			return
 		case _, ok = <-ticker.C:
 			startTime := time.Now()
-			maxpoolsize := viper.GetInt("maxpoolsize")
 			h.configLock.Lock()
-			h.log.Infow("starting main loop", zap.Int("maxpoolsize", maxpoolsize))
-			p := pool.New().WithMaxGoroutines(maxpoolsize)
+			h.log.Infow("starting main loop", zap.Int("maxpoolsize", h.config.MaxPoolSize))
+			p := pool.New().WithMaxGoroutines(h.config.MaxPoolSize)
 			for _, values := range h.config.PlaceholderValues {
-				values := values
-				p.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
+				_ = values
+				// values := values
+				// p.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
 			}
 			p.Wait()
 			h.configLock.Unlock()
