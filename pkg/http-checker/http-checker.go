@@ -44,13 +44,15 @@ type httpChecker struct {
 }
 
 func (h *httpChecker) readConfig() {
-	h.log.Infow("config changed, waiting for lock")
+	h.log.Infow("config has changed, waiting for lock")
 	h.configLock.Lock()
 	defer h.configLock.Unlock()
 	oldConfig := h.config
 	if err := h.viper.Unmarshal(&h.config); err != nil {
 		h.config = oldConfig
 		h.log.Errorf("failed to unmarshal config %s", h.viper.ConfigFileUsed())
+	} else {
+		h.log.Infow("successfully unmarshalled config %s", h.viper.ConfigFileUsed())
 	}
 }
 
@@ -133,8 +135,8 @@ func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, plac
 	}
 	labels := prometheus.Labels{"code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
 	labels = h.fillLabels(labels, placeholderNames, placeholderValues)
-	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
-	h.metrics.HttpRequestDurationSum.With(labels).Add(float64(availability.latency.Milliseconds()))
+	h.metrics.HttpRequestDurationSecondsCount.With(labels).Add(1)
+	h.metrics.HttpRequestDurationSecondsSum.With(labels).Add(float64(availability.latency.Seconds()))
 
 	if err != nil {
 		log.Errorw("check failed", zap.Error(err))
@@ -185,18 +187,17 @@ func (h *httpChecker) Run() {
 		case _, ok = <-ticker.C:
 			startTime := time.Now()
 			h.configLock.Lock()
-			h.log.Infow("starting main loop", zap.Int("maxpoolsize", h.config.MaxPoolSize))
+			h.log.Infow("starting main loop", zap.Int("maxPoolSize", h.config.MaxPoolSize))
 			p := pool.New().WithMaxGoroutines(h.config.MaxPoolSize)
 			for _, values := range h.config.PlaceholderValues {
-				_ = values
-				// values := values
-				// p.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
+				values := values
+				p.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
 			}
 			p.Wait()
 			h.configLock.Unlock()
 			elapsedTime := time.Since(startTime)
-			h.metrics.ProcessingDurationSum.Add(elapsedTime.Seconds())
-			h.metrics.ProcessingDurationCount.Add(1)
+			h.metrics.ProcessingDurationSecondsSum.Add(elapsedTime.Seconds())
+			h.metrics.ProcessingDurationSecondsCount.Add(1)
 			h.log.Infow("main loop done", zap.Float64("duration", elapsedTime.Seconds()))
 		}
 	}

@@ -52,7 +52,6 @@ var runCmd = &cobra.Command{
 		handler := zapslog.NewHandler(log.Desugar().Core(), nil)
 		opts := viper.WithLogger(slog.New(handler))
 		v := viper.NewWithOptions(opts)
-
 		v.AddConfigPath("./config")
 		v.AddConfigPath("/http-checker/configs")
 		v.SetConfigName("config")

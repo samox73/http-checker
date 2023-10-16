@@ -37,19 +37,19 @@ func New(labels []string) Metrics {
 	finalLabels := []string{"code", "ips"}
 	finalLabels = append(finalLabels, labels...)
 	return Metrics{
-		HttpRequestDurationCount: promauto.NewCounterVec(prometheus.CounterOpts{
+		HttpRequestDurationSecondsCount: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_request_duration_seconds_count",
 			Help: "The total number of http requests that have been made",
 		}, finalLabels),
-		HttpRequestDurationSum: promauto.NewCounterVec(prometheus.CounterOpts{
+		HttpRequestDurationSecondsSum: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "http_request_duration_seconds_sum",
 			Help: "The sum of durations of the http requests that have been made",
 		}, finalLabels),
-		ProcessingDurationCount: promauto.NewCounter(prometheus.CounterOpts{
+		ProcessingDurationSecondsCount: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "processing_duration_seconds_count",
 			Help: "The total number of processing loops that have been executed",
 		}),
-		ProcessingDurationSum: promauto.NewCounter(prometheus.CounterOpts{
+		ProcessingDurationSecondsSum: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "processing_duration_seconds_sum",
 			Help: "The sum of durations of the processing loops that have been executed",
 		}),
@@ -57,8 +57,8 @@ func New(labels []string) Metrics {
 }
 
 type Metrics struct {
-	HttpRequestDurationCount *prometheus.CounterVec
-	HttpRequestDurationSum   *prometheus.CounterVec
-	ProcessingDurationCount  prometheus.Counter
-	ProcessingDurationSum    prometheus.Counter
+	HttpRequestDurationSecondsCount *prometheus.CounterVec
+	HttpRequestDurationSecondsSum   *prometheus.CounterVec
+	ProcessingDurationSecondsCount  prometheus.Counter
+	ProcessingDurationSecondsSum    prometheus.Counter
 }
