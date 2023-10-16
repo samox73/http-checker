@@ -18,6 +18,7 @@ func New(kv ...any) *zap.SugaredLogger {
 		log = zap.Must(zap.NewDevelopment(zap.AddStacktrace(zap.PanicLevel))).Sugar()
 	} else {
 		cfg := zap.NewProductionConfig()
+		cfg.Sampling = nil // disable sampling
 		cfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout(time.RFC3339)
 		cfg.Level.SetLevel(zapcore.InfoLevel)
 		l, err := cfg.Build(zap.AddStacktrace(zap.PanicLevel))

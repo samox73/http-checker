@@ -41,7 +41,7 @@ var runCmd = &cobra.Command{
 			IdleConnTimeout:     0,
 		}
 
-		client := http.Client{
+		client := &http.Client{
 			Timeout:   time.Duration(period) * time.Second,
 			Transport: transport,
 		}

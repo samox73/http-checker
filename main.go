@@ -18,5 +18,6 @@ func main() {
 	if err := viper.ReadInConfig(); err != nil {
 		log.Fatal(err)
 	}
+	viper.WatchConfig()
 	cmd.Execute()
 }

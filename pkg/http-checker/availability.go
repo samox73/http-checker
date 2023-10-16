@@ -8,23 +8,22 @@ import (
 )
 
 type availability struct {
-	code            int
-	ips             []string
-	latencyInMillis int64
-	time            time.Time
+	code    int
+	ips     []string
+	latency time.Duration
+	time    time.Time
 }
 
-func (h *httpChecker) makeHttpRequest(url string) (int64, int, error) {
+func (h *httpChecker) makeHttpRequest(url string) (time.Duration, int, error) {
 	startTime := time.Now()
 	resp, err := h.client.Get(url)
-	elapsedTime := time.Since(startTime)
-	millis := elapsedTime.Milliseconds()
+	latency := time.Since(startTime)
 	if err != nil {
-		return millis, 0, err
+		return latency, 0, err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	return millis, resp.StatusCode, nil
+	return latency, resp.StatusCode, nil
 }
 
 func lookupIPs(host string) ([]string, error) {

@@ -1,6 +1,7 @@
 package httpchecker
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"net/http"
@@ -9,11 +10,13 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sourcegraph/conc"
+	"github.com/sourcegraph/conc/pool"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 
@@ -27,35 +30,62 @@ type config struct {
 }
 
 type httpChecker struct {
-	config   config
-	client   http.Client
-	metrics  metrics.Metrics
-	log      *zap.SugaredLogger
-	period   int
-	persist  bool
-	filename string
+	config     config
+	configLock sync.Mutex
+	client     *http.Client
+	metrics    metrics.Metrics
+	log        *zap.SugaredLogger
+	period     int
+	persist    bool
+	filename   string
+	writer     *csv.Writer
 }
 
-func New(client http.Client, log *zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
-	config := config{}
-	if err := viper.Unmarshal(&config); err != nil {
-		log.Errorf("failed to unmarshal config %s", viper.GetViper().ConfigFileUsed())
+func (h *httpChecker) readConfig() {
+	h.configLock.Lock()
+	defer h.configLock.Unlock()
+	oldConfig := h.config
+	h.config = config{}
+	if err := viper.Unmarshal(&h.config); err != nil {
+		h.config = oldConfig
+		h.log.Errorf("failed to unmarshal config %s", viper.GetViper().ConfigFileUsed())
+	} else {
+		h.log.Infof("config read successfully: %v", h.config)
 	}
-	log.Debugf("config read successfully: %v", config)
-	metrics := metrics.New(config.PlaceholderNames)
-	return httpChecker{config: config, client: client, metrics: metrics, log: log, period: period, persist: persist, filename: filename}
 }
-func (h *httpChecker) observe(urlInput string) (*availability, error) {
-	now := time.Now()
 
+func New(client *http.Client, log *zap.SugaredLogger, period int, persist bool, filename string) httpChecker {
+	w, err := getCsvWriter(persist, filename)
+	if err != nil {
+		log.Errorw("could not create csv writer", zap.Error(err))
+	}
+	h := httpChecker{
+		client:   client,
+		log:      log,
+		period:   period,
+		persist:  persist,
+		filename: filename,
+		writer:   w,
+	}
+	h.readConfig()
+	h.metrics = metrics.New(h.config.PlaceholderNames)
+	viper.OnConfigChange(func(in fsnotify.Event) {
+		h.log.Infow("config changed")
+		h.readConfig()
+	})
+	return h
+}
+
+func (h *httpChecker) observe(urlInput string) (*availability, error) {
 	url, err := url.Parse(urlInput)
 	if err != nil {
 		h.log.Errorw("could not parse url", zap.Error(err))
 		return nil, err
 	}
 
-	millis, code, err := h.makeHttpRequest(url.String())
-	availability := &availability{latencyInMillis: millis, code: code, time: now}
+	now := time.Now()
+	latency, code, err := h.makeHttpRequest(url.String())
+	availability := &availability{latency: latency, code: code, time: now}
 	if err != nil {
 		h.log.Errorw("could not complete http request", zap.Error(err))
 		return availability, err
@@ -69,16 +99,6 @@ func (h *httpChecker) observe(urlInput string) (*availability, error) {
 	availability.ips = ips
 
 	return availability, nil
-}
-
-func persistToWriter(a availability, writer *csv.Writer) error {
-	ips := fmt.Sprintf(`["%s"]`, strings.Join(a.ips, `","`))
-	time := a.time.Format(time.RFC3339Nano)
-	err := writer.Write([]string{time, strconv.Itoa(a.code), strconv.FormatInt(a.latencyInMillis, 10), ips})
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func appendKeyValues(log *zap.SugaredLogger, placeholderNames []string, placeholderValues []any) *zap.SugaredLogger {
@@ -107,11 +127,6 @@ func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, plac
 	log := appendKeyValues(h.log, placeholderNames, placeholderValues)
 	log.Debugw("starting check")
 
-	w, err := getCsvWriter(h.persist, h.filename, urlToCheck)
-	if err != nil {
-		log.Errorw("could not create file, results will not be persisted", zap.Error(err))
-	}
-
 	availability, err := h.observe(urlToCheck)
 	if availability == nil {
 		return
@@ -119,7 +134,7 @@ func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, plac
 	labels := prometheus.Labels{"code": strconv.Itoa(availability.code), "ips": strings.Join(availability.ips, ",")}
 	labels = h.fillLabels(labels, placeholderNames, placeholderValues)
 	h.metrics.HttpRequestDurationCount.With(labels).Add(1)
-	h.metrics.HttpRequestDurationSum.With(labels).Add(0.001 * float64(availability.latencyInMillis))
+	h.metrics.HttpRequestDurationSum.With(labels).Add(float64(availability.latency.Milliseconds()))
 
 	if err != nil {
 		log.Errorw("check failed", zap.Error(err))
@@ -127,47 +142,58 @@ func (h *httpChecker) runUrl(urlTemplate string, placeholderNames []string, plac
 	}
 
 	if h.persist {
-		defer w.Flush()
-		err = persistToWriter(*availability, w)
+		defer h.writer.Flush()
+		err = h.persistToWriter(*availability, urlToCheck)
 		if err != nil {
 			log.Errorw("could not persist availibility", zap.Error(err))
 		}
 	}
 	if availability.code >= 200 && availability.code < 300 {
-		log.Infow("check completed", zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
+		log.Infow("check completed",
+			zap.Int("code", availability.code),
+			zap.Int64("millis", availability.latency.Milliseconds()),
+			zap.Strings("ips", availability.ips),
+		)
 	} else {
-		log.Errorw("check completed", zap.Int("code", availability.code), zap.Int64("millis", availability.latencyInMillis), zap.Strings("ips", availability.ips))
+		log.Errorw("check completed",
+			zap.Int("code", availability.code),
+			zap.Int64("millis", availability.latency.Milliseconds()),
+			zap.Strings("ips", availability.ips),
+		)
 	}
 }
 
 func (h *httpChecker) Run() {
 	h.log.Infow("starting ticker")
 	ticker := time.NewTicker(time.Duration(h.period) * time.Second)
-	tickerChan := make(chan bool)
 
+	ctx, cancel := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	go func() {
 		for sig := range c {
 			h.log.Infow("shutting down", zap.String("signal", sig.String()))
 			ticker.Stop()
-			tickerChan <- true
+			cancel()
 		}
 	}()
 
 	for ok := true; ok; {
 		select {
-		case <-tickerChan:
+		case <-ctx.Done():
 			return
 		case _, ok = <-ticker.C:
-			h.log.Infow("starting main loop")
 			startTime := time.Now()
-			var wg conc.WaitGroup
+			maxpoolsize := viper.GetInt("maxpoolsize")
+			h.configLock.Lock()
+			h.log.Infow("starting main loop", zap.Int("maxpoolsize", maxpoolsize))
+			p := pool.New().WithMaxGoroutines(maxpoolsize)
 			for _, values := range h.config.PlaceholderValues {
 				values := values
-				wg.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
+				p.Go(func() { h.runUrl(h.config.UrlTemplate, h.config.PlaceholderNames, values) })
 			}
-			wg.Wait()
+			p.Wait()
+			h.configLock.Unlock()
 			elapsedTime := time.Since(startTime)
 			h.metrics.ProcessingDurationSum.Add(elapsedTime.Seconds())
 			h.metrics.ProcessingDurationCount.Add(1)
