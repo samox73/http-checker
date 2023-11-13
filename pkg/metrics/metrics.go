@@ -12,19 +12,13 @@ import (
 )
 
 func ServeProfilerAndMetrics(logger *zap.SugaredLogger, addr string) {
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	http.Handle("/metrics", promhttp.Handler())
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
 		ReadHeaderTimeout: time.Minute,
 	}
+	http.Handle("debug", pprof.Handler("pprof"))
 	logger.Infof("debug server listening on: %s", addr)
 
 	err := server.ListenAndServe()

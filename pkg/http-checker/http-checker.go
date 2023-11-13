@@ -3,6 +3,7 @@ package httpchecker
 import (
 	"context"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -50,9 +51,9 @@ func (h *httpChecker) readConfig() {
 	oldConfig := h.config
 	if err := h.viper.Unmarshal(&h.config); err != nil {
 		h.config = oldConfig
-		h.log.Errorf("failed to unmarshal config %s", h.viper.ConfigFileUsed())
+		h.log.Errorf("failed to unmarshal config %s", "filename", h.viper.ConfigFileUsed())
 	} else {
-		h.log.Infow("successfully unmarshalled config %s", h.viper.ConfigFileUsed())
+		h.log.Infow("successfully unmarshalled config %s", "filename", h.viper.ConfigFileUsed())
 	}
 }
 
@@ -74,6 +75,17 @@ func New(v *viper.Viper, client *http.Client, log *zap.SugaredLogger, period int
 	h.metrics = metrics.New(h.config.PlaceholderNames)
 	h.viper.OnConfigChange(func(in fsnotify.Event) {
 		h.readConfig()
+	})
+	http.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
+		h.log.Infow("serving config")
+		bytes, err := json.MarshalIndent(h.config, "", "  ")
+		if err != nil {
+			h.log.Errorw("could not marshal config as json", zap.Error(err))
+		}
+		_, err = w.Write(bytes)
+		if err != nil {
+			h.log.Errorw("could not encode config bytes", zap.Error(err))
+		}
 	})
 	return &h
 }

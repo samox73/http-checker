@@ -1,4 +1,5 @@
 {
+  "maxpoolsize": 5,
   "urlTemplate": "https://%s.%s/%s%s",
   "placeholderNames": [
     "subdomain",
